@@ -26,6 +26,99 @@ import {
   textToSpeechService,
 } from '../services/speechService.ts';
 
+// ======================================================
+// HIGEOAI - GOOGLE GEMINI API
+// ======================================================
+// Dán API key MỚI từ Google AI Studio vào giữa hai dấu nháy.
+// Không dùng lại key đã từng gửi trong cuộc trò chuyện.
+const GEMINI_API_KEY = 'AIzaSyD6fZFug2ocK8wReR9Cztg1hgT--wIaESQ';
+const GEMINI_MODEL = 'gemini-3.8-flash';
+const GEMINI_API_URL =
+  `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
+
+const HIGEOAI_SYSTEM_PROMPT = `
+Bạn là HIGEOAI, trợ lý học tập chuyên sâu môn Lịch sử và Địa lí THCS
+trên nền tảng HIGEOEDU.
+
+ĐỐI TƯỢNG:
+- Học sinh lớp 6, 7, 8, 9 theo Chương trình GDPT 2018.
+- Giao tiếp bằng tiếng Việt, gần gũi, tích cực, khuyến khích học sinh tự học.
+
+NGUYÊN TẮC:
+1. Ưu tiên kiến thức chính xác, trình bày có hệ thống và phù hợp lứa tuổi.
+2. Không tự bịa mốc thời gian, nhân vật, sự kiện, số liệu hoặc nội dung sách giáo khoa.
+3. Khi chưa đủ căn cứ, hãy nói rõ điều chưa chắc chắn và đề nghị học sinh cung cấp
+   trang sách, ảnh hoặc tài liệu để đối chiếu.
+4. Khi học sinh hỏi bài tập, hướng dẫn từng bước, gợi mở tư duy trước khi đưa đáp án.
+5. Phân biệt rõ kiến thức Lịch sử và Địa lí; giải thích thuật ngữ bằng ngôn ngữ dễ hiểu.
+6. Không khẳng định đã đọc nội dung tệp nếu nội dung tệp chưa được cung cấp trong câu hỏi.
+7. Khi tạo câu hỏi, câu chữ phải rõ ràng, chỉ có một đáp án đúng nếu là trắc nghiệm.
+
+Bạn là người đồng hành học tập, không làm thay toàn bộ nhiệm vụ tư duy của học sinh.
+`;
+
+type GeminiPart = { text: string };
+type GeminiContent = {
+  role: 'user' | 'model';
+  parts: GeminiPart[];
+};
+
+// Hàm dùng chung cho cả trò chuyện và tạo đề kiểm tra.
+async function callGemini(
+  contents: GeminiContent[],
+  jsonMode = false
+): Promise<string> {
+  if (
+    !GEMINI_API_KEY ||
+  ) {
+    throw new Error('Bạn chưa nhập Google Gemini API Key trong AiAssistant.tsx.');
+  }
+
+  const response = await fetch(GEMINI_API_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-goog-api-key': GEMINI_API_KEY,
+    },
+    body: JSON.stringify({
+      systemInstruction: {
+        parts: [{ text: HIGEOAI_SYSTEM_PROMPT }],
+      },
+      contents,
+      generationConfig: {
+        temperature: jsonMode ? 0.3 : 0.7,
+        maxOutputTokens: 4096,
+        ...(jsonMode ? { responseMimeType: 'application/json' } : {}),
+      },
+    }),
+  });
+
+  const data = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    const message =
+      data?.error?.message ||
+      `Google Gemini trả về lỗi HTTP ${response.status}.`;
+    throw new Error(message);
+  }
+
+  const text = data?.candidates?.[0]?.content?.parts
+    ?.map((part: { text?: string }) => part.text || '')
+    .join('')
+    .trim();
+
+  if (!text) {
+    const reason = data?.candidates?.[0]?.finishReason;
+    throw new Error(
+      reason
+        ? `Gemini không tạo được câu trả lời (finishReason: ${reason}).`
+        : 'Gemini không trả về nội dung. Vui lòng thử lại.'
+    );
+  }
+
+  return text;
+}
+
 interface AiAssistantProps {
   onStartCustomQuiz: (questions: Question[]) => void;
 }
@@ -167,12 +260,11 @@ export const AiAssistant: React.FC<AiAssistantProps> = ({ onStartCustomQuiz }) =
     ];
   };
 
-  // Send message to Server API /api/chat
+  // Gửi tin nhắn trực tiếp đến Google Gemini
   const handleSendMessage = async (textToSend?: string) => {
     const messageContent = (textToSend || inputPrompt).trim();
     if (!messageContent || isLoading) return;
 
-    // Stop ongoing speech when a new message is sent
     textToSpeechService.stop();
     setTtsSpeakingId(null);
     setRecognizedSpeechText(null);
@@ -181,7 +273,10 @@ export const AiAssistant: React.FC<AiAssistantProps> = ({ onStartCustomQuiz }) =
       id: `user-${Date.now()}`,
       role: 'user',
       content: messageContent,
-      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      timestamp: new Date().toLocaleTimeString([], {
+        hour: '2-digit',
+        minute: '2-digit',
+      }),
     };
 
     const updatedMessages = [...messages, userMessage];
@@ -189,57 +284,69 @@ export const AiAssistant: React.FC<AiAssistantProps> = ({ onStartCustomQuiz }) =
     setInputPrompt('');
     setIsLoading(true);
 
-    const historyPayload = updatedMessages.map((m) => ({
-      role: m.role,
-      content: m.content,
-    }));
-
     try {
-      const response = await fetch('/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          message: messageContent,
-          history: historyPayload,
-          fileContext: attachedFile ? attachedFile.content : undefined,
-        }),
-      });
+      // Lịch sử cũ; loại bỏ lời chào hệ thống nếu chưa có hội thoại thật.
+      const previousMessages = updatedMessages.slice(0, -1).filter(
+        (message) => message.id !== 'msg-welcome' && message.id !== 'msg-reset'
+      );
 
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
+      const history: GeminiContent[] = previousMessages.map((message) => ({
+        role: message.role,
+        parts: [{ text: message.content }],
+      }));
 
-      const data = await response.json();
-      const replyText =
-        data.reply ||
-        'HIGEOAI đã ghi nhận câu hỏi của cậu! Cậu hãy thử suy nghĩ và phản hồi nhé.';
+      const promptWithFile = attachedFile
+        ? `TÊN TÀI LIỆU: ${attachedFile.name}
 
-      const options = detectOptions(replyText);
-      const followUps = generateFollowUps(replyText);
+NỘI DUNG VĂN BẢN ĐƯỢC ĐỌC TỪ TỆP:
+${attachedFile.content}
+
+YÊU CẦU CỦA HỌC SINH:
+${messageContent}`
+        : messageContent;
+
+      const contents: GeminiContent[] = [
+        ...history,
+        {
+          role: 'user',
+          parts: [{ text: promptWithFile }],
+        },
+      ];
+
+      const replyText = await callGemini(contents);
 
       const aiMessage: Message = {
         id: `ai-${Date.now()}`,
         role: 'model',
         content: replyText,
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        options,
-        followUps,
+        timestamp: new Date().toLocaleTimeString([], {
+          hour: '2-digit',
+          minute: '2-digit',
+        }),
+        options: detectOptions(replyText),
+        followUps: generateFollowUps(replyText),
       };
 
       setMessages((prev) => [...prev, aiMessage]);
     } catch (err: any) {
-      console.error('Chat error:', err);
+      console.error('HIGEOAI Gemini chat error:', err);
+
       setMessages((prev) => [
         ...prev,
         {
           id: `ai-err-${Date.now()}`,
           role: 'model',
           content:
-            '😥 Tớ chưa kết nối được với hệ thống AI lúc này. Cậu thử lại sau vài giây hoặc kiểm tra kết nối mạng nhé! 🛰️',
-          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            `😥 HIGEOAI chưa kết nối được với Gemini.\n\n` +
+            `Chi tiết: ${err?.message || 'Lỗi không xác định.'}\n\n` +
+            'Bạn hãy kiểm tra API Key, quyền sử dụng API và kết nối mạng rồi thử lại nhé!',
+          timestamp: new Date().toLocaleTimeString([], {
+            hour: '2-digit',
+            minute: '2-digit',
+          }),
           followUps: [
+            'Thử kết nối lại với HIGEOAI',
             'Tại sao nước ta có khí hậu nhiệt đới gió mùa?',
-            'Kể cho tớ nghe về trận chiến Bạch Đằng 938 đi!',
           ],
         },
       ]);
@@ -360,29 +467,137 @@ export const AiAssistant: React.FC<AiAssistantProps> = ({ onStartCustomQuiz }) =
     }
   };
 
-  // Generate Custom Practice Test
+  // Tạo đề ôn tập trực tiếp bằng Google Gemini
   const handleCreateTest = async () => {
-    setIsGeneratingTest(true);
-    try {
-      const response = await fetch('/api/generate-quiz', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          subject: testSubject,
-          grade: testGrade,
-          topic: testTopic,
-          count: testCount,
-          difficulty: testDifficulty,
-        }),
-      });
+    if (!testTopic.trim()) {
+      alert('Bạn hãy nhập chủ đề bài học cần tạo đề.');
+      return;
+    }
 
-      const data = await response.json();
-      if (data.questions && data.questions.length > 0) {
-        setShowTestGenModal(false);
-        onStartCustomQuiz(data.questions);
+    setIsGeneratingTest(true);
+
+    try {
+      const subjectName = testSubject === 'history' ? 'Lịch sử' : 'Địa lí';
+      const difficultyName =
+        testDifficulty === 'basic'
+          ? 'Nhận biết - cơ bản'
+          : testDifficulty === 'medium'
+          ? 'Thông hiểu và vận dụng'
+          : 'Vận dụng cao - nâng cao';
+
+      const prompt = `
+Hãy tạo đúng ${testCount} câu hỏi trắc nghiệm môn ${subjectName}
+dành cho học sinh ${testGrade} theo định hướng Chương trình GDPT 2018.
+
+CHỦ ĐỀ: ${testTopic}
+MỨC ĐỘ: ${difficultyName}
+
+YÊU CẦU:
+- Mỗi câu có đúng 4 phương án A, B, C, D.
+- Mỗi câu chỉ có một đáp án đúng.
+- Các phương án nhiễu phải hợp lí, không gây tranh cãi.
+- Nội dung chính xác, phù hợp với học sinh THCS.
+- Không tự bịa sự kiện, mốc thời gian hoặc số liệu.
+- Mỗi câu có giải thích ngắn gọn.
+- Trả về JSON hợp lệ, không dùng dấu Markdown hoặc văn bản bên ngoài JSON.
+
+CẤU TRÚC BẮT BUỘC:
+{
+  "questions": [
+    {
+      "question": "Nội dung câu hỏi",
+      "options": [
+        "Nội dung phương án A",
+        "Nội dung phương án B",
+        "Nội dung phương án C",
+        "Nội dung phương án D"
+      ],
+      "correctAnswer": 0,
+      "correctAnswerLetter": "A",
+      "explanation": "Giải thích đáp án"
+    }
+  ]
+}
+
+Lưu ý: correctAnswer là chỉ số đáp án bắt đầu từ 0:
+0 tương ứng A, 1 tương ứng B, 2 tương ứng C, 3 tương ứng D.
+`;
+
+      const result = await callGemini(
+        [
+          {
+            role: 'user',
+            parts: [{ text: prompt }],
+          },
+        ],
+        true
+      );
+
+      let parsed: any;
+      try {
+        parsed = JSON.parse(result);
+      } catch {
+        // Dự phòng trường hợp mô hình trả JSON nằm trong code fence.
+        const cleaned = result
+          .replace(/^```(?:json)?\s*/i, '')
+          .replace(/\s*```$/, '');
+        parsed = JSON.parse(cleaned);
       }
-    } catch (err) {
-      console.error(err);
+
+      if (!Array.isArray(parsed?.questions) || parsed.questions.length === 0) {
+        throw new Error('Dữ liệu đề kiểm tra trả về không có danh sách câu hỏi.');
+      }
+
+      const normalizedQuestions = parsed.questions
+        .slice(0, testCount)
+        .map((item: any, index: number) => {
+          const rawOptions = item.options;
+
+          const options = Array.isArray(rawOptions)
+            ? rawOptions
+            : rawOptions && typeof rawOptions === 'object'
+            ? ['A', 'B', 'C', 'D'].map((key) => rawOptions[key] || '')
+            : [];
+
+          const letter = String(
+            item.correctAnswerLetter ||
+              (typeof item.correctAnswer === 'string'
+                ? item.correctAnswer
+                : ['A', 'B', 'C', 'D'][Number(item.correctAnswer)] || 'A')
+          ).toUpperCase();
+
+          const answerIndex = Math.max(
+            0,
+            ['A', 'B', 'C', 'D'].indexOf(letter)
+          );
+
+          if (!item.question || options.length !== 4 || options.some((v: any) => !v)) {
+            throw new Error(`Câu ${index + 1} không đúng cấu trúc 4 phương án.`);
+          }
+
+          return {
+            id: `gemini-${Date.now()}-${index}`,
+            question: String(item.question),
+            options: options.map((option: any) => String(option)),
+            correctAnswer: answerIndex,
+            correctAnswerLetter: letter,
+            explanation: String(item.explanation || ''),
+            subject: subjectName,
+            grade: testGrade,
+            topic: testTopic,
+            difficulty: testDifficulty,
+          };
+        });
+
+      setShowTestGenModal(false);
+
+      // Ép kiểu tại điểm tích hợp vì kiểu Question được khai báo ở types/index.ts.
+      onStartCustomQuiz(normalizedQuestions as unknown as Question[]);
+    } catch (err: any) {
+      console.error('HIGEOAI quiz generation error:', err);
+      alert(
+        `Không thể tạo đề kiểm tra.\n\n${err?.message || 'Vui lòng thử lại.'}`
+      );
     } finally {
       setIsGeneratingTest(false);
     }
