@@ -32,9 +32,16 @@ import {
 // Dán API key MỚI từ Google AI Studio vào giữa hai dấu nháy.
 // Không dùng lại key đã từng gửi trong cuộc trò chuyện.
 const GEMINI_API_KEY = 'AIzaSyD6fZFug2ocK8wReR9Cztg1hgT--wIaESQ';
-const GEMINI_MODEL = 'gemini-3.8-flash';
-const GEMINI_API_URL =
-  `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
+// Ưu tiên model chính; nếu Google báo quá tải (HTTP 503),
+// tự động thử lại rồi chuyển sang model Flash ổn định khác.
+const GEMINI_MODELS = [
+  'gemini-3.8-flash',
+  'gemini-3.6-flash',
+  'gemini-3.5-flash-lite',
+] as const;
+
+const GEMINI_API_BASE =
+  'https://generativelanguage.googleapis.com/v1beta/models';
 
 const HIGEOAI_SYSTEM_PROMPT = `
 Bạn là HIGEOAI, trợ lý học tập chuyên sâu môn Lịch sử và Địa lí THCS
@@ -72,49 +79,87 @@ async function callGemini(
     throw new Error('Bạn chưa nhập Google Gemini API Key trong AiAssistant.tsx.');
   }
 
-  const response = await fetch(GEMINI_API_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-goog-api-key': GEMINI_API_KEY,
+  const requestBody = {
+    systemInstruction: {
+      parts: [{ text: HIGEOAI_SYSTEM_PROMPT }],
     },
-    body: JSON.stringify({
-      systemInstruction: {
-        parts: [{ text: HIGEOAI_SYSTEM_PROMPT }],
-      },
-      contents,
-      generationConfig: {
-        temperature: jsonMode ? 0.3 : 0.7,
-        maxOutputTokens: 4096,
-        ...(jsonMode ? { responseMimeType: 'application/json' } : {}),
-      },
-    }),
-  });
+    contents,
+    generationConfig: {
+      temperature: jsonMode ? 0.3 : 0.7,
+      maxOutputTokens: 4096,
+      ...(jsonMode ? { responseMimeType: 'application/json' } : {}),
+    },
+  };
 
-  const data = await response.json().catch(() => ({}));
+  let lastError = 'Google Gemini chưa phản hồi. Vui lòng thử lại.';
 
-  if (!response.ok) {
-    const message =
-      data?.error?.message ||
-      `Google Gemini trả về lỗi HTTP ${response.status}.`;
-    throw new Error(message);
+  for (const model of GEMINI_MODELS) {
+    const apiUrl = `${GEMINI_API_BASE}/${model}:generateContent`;
+
+    // Thử tối đa 3 lần khi model tạm thời quá tải.
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      let response: Response;
+
+      try {
+        response = await fetch(apiUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-goog-api-key': GEMINI_API_KEY,
+          },
+          body: JSON.stringify(requestBody),
+        });
+      } catch (networkError: any) {
+        lastError = networkError?.message
+          ? `Không thể kết nối Google Gemini: ${networkError.message}`
+          : 'Không thể kết nối Google Gemini. Hãy kiểm tra mạng và thử lại.';
+        if (attempt < 2) {
+          await new Promise((resolve) => setTimeout(resolve, 1000 * (attempt + 1)));
+          continue;
+        }
+        break;
+      }
+
+      const data = await response.json().catch(() => ({}));
+
+      if (response.ok) {
+        const answer = data?.candidates?.[0]?.content?.parts
+          ?.map((part: { text?: string }) => part.text || '')
+          .join('')
+          .trim();
+
+        if (answer) return answer;
+
+        const reason = data?.candidates?.[0]?.finishReason;
+        throw new Error(
+          reason
+            ? `Gemini không tạo được câu trả lời (finishReason: ${reason}).`
+            : 'Gemini không trả về nội dung. Vui lòng thử lại.'
+        );
+      }
+
+      const message =
+        data?.error?.message ||
+        `Google Gemini trả về lỗi HTTP ${response.status}.`;
+
+      lastError = `Gemini (${model}) – HTTP ${response.status}: ${message}`;
+
+      // Chỉ tự thử lại/chuyển model khi máy chủ báo quá tải.
+      if (response.status !== 503) {
+        throw new Error(lastError);
+      }
+
+      if (attempt < 2) {
+        await new Promise((resolve) => setTimeout(resolve, 1000 * (2 ** attempt)));
+      }
+    }
+
+    // Nếu model hiện tại vẫn 503 sau 3 lần, thử model tiếp theo.
   }
 
-  const text = data?.candidates?.[0]?.content?.parts
-    ?.map((part: { text?: string }) => part.text || '')
-    .join('')
-    .trim();
-
-  if (!text) {
-    const reason = data?.candidates?.[0]?.finishReason;
-    throw new Error(
-      reason
-        ? `Gemini không tạo được câu trả lời (finishReason: ${reason}).`
-        : 'Gemini không trả về nội dung. Vui lòng thử lại.'
-    );
-  }
-
-  return text;
+  throw new Error(
+    `${lastError}\nCác model Gemini đang bận hoặc quá tải. Vui lòng đợi một chút rồi gửi lại câu hỏi.`
+  );
 }
 
 interface AiAssistantProps {
