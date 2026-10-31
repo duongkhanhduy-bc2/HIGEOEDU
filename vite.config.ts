@@ -7,6 +7,7 @@ import { fetchVietnameseTtsChunk, splitVietnameseText } from './server/ttsServic
 
 function apiServerPlugin(): Plugin {
   return {
+    base: '/HIGEOEDU/',
     name: 'api-server-plugin',
     configureServer(server) {
       server.middlewares.use(async (req, res, next) => {
