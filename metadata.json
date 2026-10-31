@@ -1,0 +1,6 @@
+{
+  "name": "HIGEOEDU - Nền Tảng Học Sử Địa Thông Minh Cho Học Sinh THCS",
+  "description": "HIGEOEDU: Học thông minh – Hiểu thông suốt – Bước cùng AI. Nền tảng học tập chủ động môn Lịch sử và Địa lí dành cho học sinh THCS kết hợp Gamification và Trợ lý AI.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
