@@ -68,9 +68,7 @@ async function callGemini(
   contents: GeminiContent[],
   jsonMode = false
 ): Promise<string> {
-  if (
-    !GEMINI_API_KEY ||
-  ) {
+  if (!GEMINI_API_KEY || GEMINI_API_KEY.trim() === '') {
     throw new Error('Bạn chưa nhập Google Gemini API Key trong AiAssistant.tsx.');
   }
 
