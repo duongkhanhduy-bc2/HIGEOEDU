@@ -35,6 +35,7 @@ const GEMINI_API_KEY = 'AIzaSyD6fZFug2ocK8wReR9Cztg1hgT--wIaESQ';
 // Ưu tiên model chính; nếu Google báo quá tải (HTTP 503),
 // tự động thử lại rồi chuyển sang model Flash ổn định khác.
 const GEMINI_MODELS = [
+  'gemini-2.5-flash',
   'gemini-3.8-flash',
   'gemini-3.6-flash',
   'gemini-3.5-flash-lite',
