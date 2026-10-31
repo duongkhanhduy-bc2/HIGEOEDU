@@ -7,7 +7,6 @@ import { fetchVietnameseTtsChunk, splitVietnameseText } from './server/ttsServic
 
 function apiServerPlugin(): Plugin {
   return {
-    base: '/HIGEOEDU/',
     name: 'api-server-plugin',
     configureServer(server) {
       server.middlewares.use(async (req, res, next) => {
@@ -135,6 +134,7 @@ function apiServerPlugin(): Plugin {
 
 export default defineConfig(() => {
   return {
+    base: '/HIGEOEDU/', // <-- DÒNG BASE ĐƯỢC CHUYỂN XUỐNG ĐÂY ĐỂ SỬA LỖI TRANG TRẮNG
     plugins: [react(), tailwindcss(), apiServerPlugin()],
     resolve: {
       alias: {
